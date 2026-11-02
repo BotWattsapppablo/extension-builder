@@ -167,10 +167,15 @@ async function main() {
   console.log('═'.repeat(60))
   console.log(`   ${passed}/${results.length} checks passed${failed > 0 ? ` — ${failed} FAILED` : ' — ALL GOOD 🎉'}`)
   console.log('═'.repeat(60))
-  process.exit(failed > 0 ? 1 : 0)
+  // The build reads its verdict from this line rather than from the exit
+  // status: on Windows a keep-alive socket can still be closing when the run
+  // ends, and that crash used to bury a run that had passed every check.
+  console.log(`VERDICT ${JSON.stringify({ passed, failed, checks: results })}`)
+  process.exitCode = failed > 0 ? 1 : 0
 }
 
 main().catch(err => {
   console.error(`\n❌ Fatal: ${err.message}\n`)
-  process.exit(1)
+  console.log(`VERDICT ${JSON.stringify({ passed: 0, failed: 1, fatal: err.message })}`)
+  process.exitCode = 1
 })

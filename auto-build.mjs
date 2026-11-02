@@ -20,6 +20,8 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fetchRendered, isBotBlocked, closeBrowser } from './browser-fetch.mjs'
 import { safeQuery } from './query-safety.mjs'
+import { isPublicUrl } from './net-guard.mjs'
+import { smokeResult, stripVerdict } from './smoke-verdict.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUTPUT_DIR = join(__dirname, 'output')
@@ -102,6 +104,9 @@ async function plainFetch(url, referer = '') {
   if (referer) headers['Referer'] = referer
   return throttleHost(new URL(url).hostname, async () => {
     const res = await fetch(url, { headers, redirect: 'follow' })
+    // A site may answer by redirecting to an internal address. Whatever that
+    // reply contains is never handed to the builder.
+    if (!isPublicUrl(res.url)) throw new Error(`redirected to a non-public address (${res.url})`)
     return { status: res.status, text: await res.text(), finalUrl: res.url }
   })
 }
@@ -113,6 +118,7 @@ let browserAnnounced = false
  * browser instead. Gated sites are fetched through the browser from then on.
  */
 async function fetchPage(url, referer = '') {
+  if (!isPublicUrl(url)) throw new Error(`refusing to fetch "${url}" — not a public http(s) address`)
   let plain
   try {
     plain = await plainFetch(url, referer)
@@ -509,8 +515,13 @@ function detectDetailsSelectors($) {
     try {
       const m = $(c.sel)
       const t = m.length > 0 ? (c.attr ? (m.first().attr(c.attr) || '') : m.first().text()).trim() : ''
+      // A metadata block ("Status: Ongoing", "Author: …") is not a synopsis —
+      // themes reuse summary/desc class names for the info table, and shipping
+      // that as the description hides the real one, which is usually in the
+      // page's structured data.
+      const looksLikeTable = /(status|author|artist|genre|views?|rating|release|date|chapter|synonym)s?\s*:/i.test(t)
       // sane description: substantial but not a whole-page wrapper
-      if (t.length > 10 && t.length < 3000) { descSel = c.sel; descAttr = c.attr; break }
+      if (t.length > 10 && t.length < 3000 && !looksLikeTable) { descSel = c.sel; descAttr = c.attr; break }
     } catch { /* skip */ }
   }
 
@@ -1083,6 +1094,72 @@ function detectNsfw(siteUrl, $home) {
   return false
 }
 
+/**
+ * Which language the site is written in.
+ *
+ * MihonPC files sources by language, so an extension that claims 'en' while
+ * serving Indonesian text lands on the wrong shelf and vanishes from the
+ * filter the user expects. Every build used to hard-code 'en'.
+ */
+const TLD_LANG = {
+  jp: 'ja', kr: 'ko', cn: 'zh', tw: 'zh', hk: 'zh', mo: 'zh', id: 'id', fr: 'fr', es: 'es',
+  it: 'it', pt: 'pt', br: 'pt', ru: 'ru', ua: 'uk', by: 'ru', pl: 'pl', nl: 'nl',
+  de: 'de', at: 'de', ch: 'de', se: 'sv', no: 'no', dk: 'da', fi: 'fi', cz: 'cs', gr: 'el',
+  tr: 'tr', vn: 'vi', th: 'th', ir: 'fa', il: 'he', in: 'hi', pk: 'ur', mx: 'es', ar: 'ar',
+  ro: 'ro', kz: 'ru', ph: 'tl', my: 'ms'
+}
+const ISO3 = { zho: 'zh', cmn: 'zh', eng: 'en', ind: 'id', vie: 'vi', spa: 'es', por: 'pt', fre: 'fr', fra: 'fr', ger: 'de', deu: 'de', kor: 'ko', jpn: 'ja', rus: 'ru', tha: 'th', ell: 'el', heb: 'he', urd: 'ur', may: 'ms', msu: 'ms', fil: 'tl', nld: 'nl', pol: 'pl', ita: 'it', ukr: 'uk' }
+const SCRIPT_LANG = [
+  [/[\uac00-\ud7af]/, 'ko'],
+  [/[\u3040-\u30ff]/, 'ja'], // kana settles it even when kanji is present too
+  [/[\u4e00-\u9fff]/, 'zh'],
+  [/[\u0400-\u04ff]/, 'ru'],
+  [/[\u0600-\u06ff]/, 'ar'],
+  [/[\u0e00-\u0e7f]/, 'th'],
+  [/[\u0590-\u05ff]/, 'he'],
+  [/[\u0900-\u097f]/, 'hi'],
+  [/[\u0980-\u09ff]/, 'bn']
+]
+const WORD_LANG = [
+  [/\b(truyện|đọc|phát hành)\b/i, 'vi'],
+  [/\b(baca|komik|dengan|gratis)\b/i, 'id'],
+  [/\b(capítulo|leer|resumen|género)\b/i, 'es'],
+  [/\b(capítulo|ler|lançamento|resumo)\b/i, 'pt'],
+  [/\b(chapitre|lire|gratuit|roman)\b/i, 'fr'],
+  [/\b(lesen|kapitel|übersicht)\b/i, 'de']
+]
+
+// Only these are trusted from a declared <html lang>. A page that announces
+// lang="xx-yyy" would otherwise be filed under a language the app has no shelf
+// for, and the source would silently never appear in any filter.
+const KNOWN_LANGS = new Set(['en', 'id', 'vi', 'zh', 'ja', 'ko', 'es', 'pt', 'fr', 'de', 'ru', 'ar', 'th', 'he', 'hi', 'bn', 'it', 'tr', 'pl', 'nl', 'sv', 'no', 'da', 'fi', 'cs', 'el', 'uk', 'ro', 'hu', 'ms', 'tl', 'fa', 'ur', 'kk', 'my', 'km', 'lo', 'ta', 'te', 'mr', 'ne', 'si', 'ka', 'am', 'sw'])
+
+function detectLang($, siteUrl) {
+  const norm = (tag) => {
+    const t = String(tag || '').toLowerCase().replace(/_/g, '-').split('-')[0]
+    return /^[a-z]{2,3}$/.test(t) ? ISO3[t] || t : ''
+  }
+  const declared =
+    norm($('html').attr('lang')) ||
+    norm($('html').attr('xml:lang')) ||
+    norm($('meta[property="og:locale"]').attr('content')) ||
+    norm($('meta[name="language" i]').attr('content'))
+  if (declared && KNOWN_LANGS.has(declared)) return declared
+
+  const text = String($('body').text()).slice(0, 6000)
+  for (const [re, lang] of SCRIPT_LANG) if (re.test(text)) return lang
+  for (const [re, lang] of WORD_LANG) if (re.test(text)) return lang
+
+  try {
+    const parts = new URL(siteUrl).hostname.toLowerCase().split('.')
+    const last = parts[parts.length - 1]
+    if (last !== 'com' && TLD_LANG[last]) return TLD_LANG[last]
+    const second = parts[parts.length - 2]
+    if (parts.length >= 3 && TLD_LANG[second]) return TLD_LANG[second]
+  } catch { /* nothing to read the host from */ }
+  return 'en'
+}
+
 // ── Code generator ──────────────────────────────────────────────────────────
 
 function generateCode(config) {
@@ -1098,9 +1175,9 @@ function imageRef(imgUrl) {
 
   const thumbExpr = needsReferer ? 'imageRef(thumb)' : 'thumb || undefined'
   const coverExpr = needsReferer ? 'imageRef(cover)' : 'cover || manga.thumbnailUrl'
-  const pageExpr = needsReferer
-    ? "{ url: absolute(String(src)), headers: { referer: BASE + '/' } }"
-    : '{ url: absolute(String(src)) }'
+  const pageRefExpr = needsReferer
+    ? '{ url: url, headers: { referer: BASE + \'/\' } }'
+    : '{ url: url }'
 
   // URL expressions
   const pageGuard = config.singlePage ? '\n    if (page > 1) return []' : ''
@@ -1315,6 +1392,87 @@ async function getHtml(pageUrl) {
   return html.load(res.text)
 }
 
+async function getRaw(pageUrl) {
+  var res = await http.getText(pageUrl, { headers: { accept: 'text/html' } })
+  if (res.status >= 400) throw new Error('${name}: HTTP ' + res.status + ' for ' + pageUrl)
+  return { text: res.text, doc: html.load(res.text) }
+}
+
+function pageRef(src) {
+  var url = absolute(String(src || ''))
+  if (url === '') return null
+  return ${pageRefExpr}
+}
+
+// A site that builds its own reader with JavaScript leaves two things behind
+// in the HTML it serves: the complete page list inside a script blob, and
+// JSON-LD describing the manga. Both cost no bridge handles to read, which is
+// why every generated source checks them before giving up on a field.
+function asText(v) {
+  if (Array.isArray(v)) return v.join(' ')
+  return v == null ? '' : String(v)
+}
+
+function asList(v) {
+  if (Array.isArray(v)) return v.filter(Boolean).map(String)
+  return v ? [String(v)] : []
+}
+
+function ldValue(text, field) {
+  var m = new RegExp('"' + field + '"\\\\s*:\\\\s*(\\\\[[^\\\\]]{0,3000}\\\\]|"[^"]{1,800}")', 'i').exec(text || '')
+  if (!m) return null
+  if (m[1].charAt(0) === '[') {
+    var parts = m[1].match(/"([^"]*)"/g) || []
+    return parts.map(function (s) { return s.slice(1, -1) })
+  }
+  return m[1].slice(1, -1)
+}
+
+function embeddedImageArray(text) {
+  var best = []
+  var re = /\\[\\s*"[^"]{4,400}"(?:\\s*,\\s*"[^"]{4,400}")*\\]/g
+  var m
+  while ((m = re.exec(text || '')) !== null) {
+    var raw = m[0].match(/"([^"]*)"/g) || []
+    var urls = []
+    for (var i = 0; i < raw.length; i++) {
+      var u = raw[i].slice(1, -1)
+      if (!/\\.(jpe?g|png|webp|gif|avif)(\\?|#|$)/i.test(u)) continue
+      if (/logo|icon|avatar|banner|sprite|spacer|placeholder|loading|thumb|cover/i.test(u)) continue
+      urls.push(u)
+    }
+    // A chapter's pages sit together in one folder; scattered images are
+    // thumbnails and sidebars that happen to be listed in the same script.
+    var dirs = {}
+    var dominant = ''
+    var count = 0
+    for (var j = 0; j < urls.length; j++) {
+      var d = String(urls[j]).split('?')[0].split('#')[0].replace(/^https?:\\/\\/[^/]+/i, '').split('/').slice(0, -1).join('/')
+      dirs[d] = (dirs[d] || 0) + 1
+      if (dirs[d] > count) { count = dirs[d]; dominant = d }
+    }
+    var grouped = urls.filter(function (u) {
+      var d = String(u).split('?')[0].split('#')[0].replace(/^https?:\\/\\/[^/]+/i, '').split('/').slice(0, -1).join('/')
+      return d === dominant
+    })
+    if (grouped.length > best.length) best = grouped
+    if (best.length > 1500) break
+  }
+  return best.length > 1 ? best : []
+}
+
+function statusWord(text) {
+  var m = /(?:status|statut|estado|état)[\\s\\S]{0,90}?(ongoing|complet(?:ed|e|ion)?|finished|publishing|hiatus|cancel(?:l)?ed|licensed|upcoming|dropped)\\b/i.exec(text || '')
+  return m ? m[1] : ''
+}
+
+function isMetadataText(t) {
+  t = String(t || '').trim()
+  if (t === '' || t.length > 300) return false
+  return /(status|author|artist|genre|views?|rating|release|date|chapter|synonym)s?\\s*:/i.test(t) ||
+    /^(status|author|artist|genre|rating|views?|chapters?)\\b/i.test(t)
+}
+
 async function parseCards(doc) {
   var cards = await html.select(doc, CARD)
   var out = []
@@ -1406,18 +1564,28 @@ ${supportsLatest && latestUrl ? `
   },`}
 
   getMangaDetails: async function (manga) {
-    var doc = await getHtml(absolute(manga.url))
-    var title = (await html.selectText(doc, '${selectors.details.title}'))[0]
+    var page = await getRaw(absolute(manga.url))
+    var doc = page.doc
+    var title = asText((await html.selectText(doc, '${selectors.details.title}'))[0])
     var description = ${selectors.details.descriptionAttr
-      ? `(await html.selectAttr(doc, '${selectors.details.description.replace(/'/g, "\\'")}', '${selectors.details.descriptionAttr}'))[0]`
-      : `(await html.selectText(doc, '${selectors.details.description.replace(/'/g, "\\'")}'))[0]`}
+      ? `asText((await html.selectAttr(doc, '${selectors.details.description.replace(/'/g, "\\'")}', '${selectors.details.descriptionAttr}'))[0])`
+      : `asText((await html.selectText(doc, '${selectors.details.description.replace(/'/g, "\\'")}'))[0])`}
     var cover = (await html.selectAttr(doc, '${selectors.details.cover}', '${selectors.details.coverAttr}'))[0]
-    var status = (await html.selectText(doc, '${selectors.details.status}'))[0]
+    var status = asText((await html.selectText(doc, '${selectors.details.status}'))[0])
     var genres = (await html.selectText(doc, '${selectors.details.genres}')).filter(Boolean)
+    // The markup the builder measured is only the first guess. A "Status:"
+    // label in its own element reads as nothing, so fall back to what the page
+    // says about itself before the app shows an empty panel.
+    if (mapStatus(status) === 'unknown') status = asText(ldValue(page.text, 'status'))
+    if (mapStatus(status) === 'unknown') status = statusWord(page.text)
+    if (genres.length === 0) genres = asList(ldValue(page.text, 'genre'))
+    if (description.trim() === '' || isMetadataText(description)) description = asText(ldValue(page.text, 'description'))
+    if (title.trim() === '') title = asText(ldValue(page.text, 'name'))
+    if (!cover) cover = asText(ldValue(page.text, 'image'))
 ${selectors.details.author ? `    var author = afterLabel((await html.selectText(doc, '${selectors.details.author.replace(/'/g, "\\'")}'))[0])\n` : ''}${selectors.details.artist ? `    var artist = afterLabel((await html.selectText(doc, '${selectors.details.artist.replace(/'/g, "\\'")}'))[0])\n` : ''}    return {
       url: manga.url,
-      title: title ? title.trim() : manga.title,
-      description: description ? description.trim() : undefined,
+      title: title.trim() || manga.title,
+      description: description.trim() || undefined,
       thumbnailUrl: ${coverExpr},
       status: mapStatus(status),
       genres: genres.length > 0 ? genres : manga.genres${selectors.details.author ? ',\n      author: author || undefined' : ''}${selectors.details.artist ? ',\n      artist: artist || undefined' : ''}
@@ -1427,14 +1595,34 @@ ${selectors.details.author ? `    var author = afterLabel((await html.selectText
 ${chapterListCode},
 
   getPageList: async function (chapter) {
-    var doc = await getHtml(absolute(chapter.url))
-    var srcs = await html.selectAttr(doc, '${selectors.reader.images}', '${selectors.reader.imageAttr}')
+    var page = await getRaw(absolute(chapter.url))
     var pages = []
+    var seen = {}
+    var srcs = await html.selectAttr(page.doc, '${selectors.reader.images}', '${selectors.reader.imageAttr}')
     for (var i = 0; i < srcs.length; i++) {
       var src = srcs[i]
       if (!src) continue
       if (/logo|icon|avatar|banner|star/i.test(String(src))) continue
-      pages.push(${pageExpr})
+      var ref = pageRef(src)
+      if (ref && !seen[ref.url]) { seen[ref.url] = 1; pages.push(ref) }
+    }
+    // Lazy readers ship the real page list in a script blob and only mark up
+    // the first few images. Whichever source lists more pages wins.
+    var embedded = embeddedImageArray(page.text)
+    if (embedded.length > pages.length) {
+      for (var j = 0; j < embedded.length; j++) {
+        var eRef = pageRef(embedded[j])
+        if (eRef && !seen[eRef.url]) { seen[eRef.url] = 1; pages.push(eRef) }
+      }
+    }
+    if (pages.length === 0) {
+      var anySrcs = await html.selectAttr(page.doc, 'img', 'src')
+      for (var k = 0; k < anySrcs.length; k++) {
+        if (!anySrcs[k]) continue
+        if (/logo|icon|avatar|banner|star|spacer|placeholder/i.test(String(anySrcs[k]))) continue
+        var anyRef = pageRef(anySrcs[k])
+        if (anyRef && !seen[anyRef.url]) { seen[anyRef.url] = 1; pages.push(anyRef) }
+      }
     }
     if (pages.length === 0) throw new Error('${name}: no readable images found in this chapter')
     return pages
@@ -1712,10 +1900,13 @@ async function autoBuild(siteUrl, opts = {}) {
   const isNsfw = detectNsfw(siteUrl, $home)
   if (isNsfw) console.log('   🔞 NSFW markers detected → isNsfw: true')
 
+  const lang = detectLang(listingPage || $home, baseUrl)
+  console.log(`   🌍 Language: ${lang}${lang === 'en' ? '' : ' (the app files this source under that language)'}`)
+
   const config = {
     id: siteName,
     name: displayName,
-    lang: 'en',
+    lang,
     baseUrl,
     supportsLatest: !!latestUrl,
     isNsfw,
@@ -1759,7 +1950,7 @@ async function autoBuild(siteUrl, opts = {}) {
   const entry = {
     packageId: siteName,
     name: displayName,
-    lang: 'en',
+    lang,
     version: '1.0.0',
     apiVersion: 1,
     isNsfw,
@@ -1788,12 +1979,18 @@ async function autoBuild(siteUrl, opts = {}) {
   console.log('🧪 Running end-to-end smoke test (live site)...\n')
   const { spawnSync } = await import('node:child_process')
   const testRes = spawnSync(process.execPath, [join(__dirname, 'test-extension.mjs'), jsPath], {
-    stdio: 'inherit',
+    encoding: 'utf8',
     timeout: 180_000
   })
-  if (testRes.status !== 0) {
+  const testOut = `${testRes.stdout || ''}${testRes.stderr || ''}`
+  for (const line of stripVerdict(testOut).split(/\r?\n/)) {
+    if (line.trim()) console.log(line)
+  }
+  const test = smokeResult(testOut, testRes.status)
+  if (testRes.error) console.log(`   (test process: ${testRes.error.message})`)
+  if (!test.allOk) {
     console.log()
-    console.log('   ⚠️  The smoke test FAILED — this extension is NOT added to index.json.')
+    console.log(`   ⚠️  The smoke test FAILED (${test.passed}/${test.total || '?'} checks) — this extension is NOT added to index.json.`)
     console.log('      Fix output/' + siteName + '.config.json selectors, then rebuild:')
     console.log(`      node build-extension.mjs --config output/${siteName}.config.json`)
     await removeFromIndex(siteName)
@@ -1812,7 +2009,7 @@ async function autoBuild(siteUrl, opts = {}) {
   return { config, code, hash, jsPath, configPath, tested: true }
 }
 
-export { autoBuild, OUTPUT_DIR, updateIndex, removeFromIndex }
+export { autoBuild, OUTPUT_DIR, updateIndex, removeFromIndex, detectLang }
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 // Runs only when this file is the entry point; the batch app imports autoBuild.

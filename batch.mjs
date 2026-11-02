@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url'
 
 import { autoBuild, updateIndex, removeFromIndex } from './auto-build.mjs'
 import { closeBrowser } from './browser-fetch.mjs'
+import { isPublicHost } from './net-guard.mjs'
+import { smokeResult } from './smoke-verdict.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -56,6 +58,7 @@ export function parseUrlList(text) {
       continue
     }
     if (!/^https?:$/.test(url.protocol)) continue
+    if (!isPublicHost(url.hostname)) continue
     const key = url.origin + url.pathname
     if (seen.has(key)) continue
     seen.add(key)
@@ -141,7 +144,7 @@ function runSmoke(jsPath, sem) {
           while ((i = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, i).replace(ANSI, '').trimEnd()
             buffer = buffer.slice(i + 1)
-            if (line.trim()) store.getStore()?.emit(line)
+            if (line.trim() && !line.startsWith('VERDICT ')) store.getStore()?.emit(line)
           }
         }
         child.stdout.on('data', onData)
@@ -149,9 +152,11 @@ function runSmoke(jsPath, sem) {
         const killer = setTimeout(() => { try { child.kill() } catch { /* gone */ } }, SMOKE_TIMEOUT_MS)
         child.on('close', (code) => {
           clearTimeout(killer)
-          if (buffer.trim()) store.getStore()?.emit(buffer.trim())
-          const m = /(\d+)\/(\d+) checks passed/.exec(full)
-          resolve({ passed: m ? Number(m[1]) : 0, total: m ? Number(m[2]) : 0, allOk: code === 0 })
+          if (buffer.trim() && !buffer.trim().startsWith('VERDICT ')) store.getStore()?.emit(buffer.trim())
+          // The test's own report decides, not its exit status: Windows can
+          // crash the runtime while it tears down a keep-alive socket after a
+          // run where every check passed.
+          resolve(smokeResult(full, code))
         })
         child.on('error', () => {
           clearTimeout(killer)
