@@ -1,0 +1,24 @@
+{
+  "name": "mihonpc-extension-builder",
+  "version": "1.0.0",
+  "description": "CLI tool to generate MihonPC extensions from any manga website",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "app": "node start-app.mjs",
+    "app:test": "node test-app.mjs",
+    "exe": "node make-exe.mjs",
+    "auto": "node auto-build.mjs",
+    "build": "node build-extension.mjs",
+    "test": "node test-extension.mjs",
+    "audit": "node audit-extensions.mjs",
+    "analyze": "node analyze-site.mjs",
+    "generate": "node generate-extension.mjs"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "cheerio": "^1.0.0",
+    "inquirer": "^9.2.12",
+    "playwright": "^1.64.1"
+  }
+}

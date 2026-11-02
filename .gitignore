@@ -1,0 +1,15 @@
+# Persistent Chromium profile(s) used by browser-fetch.mjs for bot-gated builds.
+.browser-profile/
+.browser-profile-*/
+# Screenshot written by test-app.mjs.
+app-proof.png
+exe-proof.png
+# Launcher build output — regenerate with `node make-exe.mjs`.
+*.exe
+launcher/build/
+# Per-run results of audit-extensions.mjs.
+.audit/
+# Dependencies install with `npm install`.
+node_modules/
+# Generated extensions and store index — products of the tool, not the tool.
+output/

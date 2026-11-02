@@ -1,0 +1,8 @@
+{
+  "name": "mihonpc-extension-builder-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop front-end for the MihonPC extension builder (batch mode)",
+  "type": "module",
+  "main": "main.mjs"
+}

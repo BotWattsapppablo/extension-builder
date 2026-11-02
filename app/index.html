@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
+    <title>MihonPC Extension Builder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">M</span>
+        <div class="brand-text">
+          <h1>Extension Builder</h1>
+          <p>paste sites · build them all at once</p>
+        </div>
+      </div>
+      <div class="stats" id="stats"></div>
+    </header>
+
+    <div class="progress" id="progress"><i id="bar"></i></div>
+
+    <main class="layout">
+      <aside class="panel">
+        <label class="field-label" for="urls">Sites — one URL per line</label>
+        <textarea
+          id="urls"
+          spellcheck="false"
+          placeholder="https://asurascans.com&#10;https://mangapill.com&#10;https://your-site.org"
+        ></textarea>
+        <p class="parsed" id="parsed">nothing to build yet</p>
+
+        <div class="row">
+          <label class="field-label" for="concurrency">
+            build at once
+            <input id="concurrency" type="number" min="1" max="30" value="20" />
+          </label>
+          <label class="check">
+            <input id="smoke" type="checkbox" checked />
+            <span>verify each build (live)</span>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="start" class="primary">Build all</button>
+          <button id="stop" class="ghost" disabled>Stop</button>
+        </div>
+
+        <button id="open" class="ghost wide">Open output folder</button>
+
+        <p class="note">
+          Every build writes <code>output/&lt;site&gt;.js</code> plus a shared
+          <code>output/index.json</code>. Click a row to read that site's log,
+          click its <code>.js</code> name to find the file, then import it in
+          MihonPC: Browse → Extensions → Import local file.
+        </p>
+        <p class="note warn-note">
+          Gated sites are opened in a real browser (Chrome / Edge / Opera if
+          installed) — one window at a time, no matter how many you queue. When a
+          row turns orange and says <b>click the browser window</b>, Cloudflare
+          wants a human: tick the box there and the build carries on by itself.
+        </p>
+        <p class="error" id="error" hidden></p>
+      </aside>
+
+      <section class="jobs-wrap">
+        <div class="jobs-head">
+          <span class="col num">#</span>
+          <span class="col site">Site</span>
+          <span class="col state">State</span>
+          <span class="col checks">Checks</span>
+          <span class="col time">Time</span>
+          <span class="col last">Last activity</span>
+        </div>
+        <div class="jobs" id="jobs"></div>
+        <p class="empty" id="empty">Nothing queued. Paste URLs on the left and hit <b>Build all</b>.</p>
+      </section>
+    </main>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
