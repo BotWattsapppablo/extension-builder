@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyzeSite } from './analyze-site.mjs'
 import { generateExtension, sha256, generateIndexEntry } from './generate-extension.mjs'
+import { siteNameFrom } from './site-name.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUTPUT_DIR = join(__dirname, 'output')
@@ -104,7 +105,7 @@ async function runWizard(initialUrl = null) {
   console.log('  ─── Extension Metadata ─────────────────────────────────\n')
 
   const baseUrl = analysis?.baseUrl || new URL(siteUrl).origin
-  const siteName = new URL(siteUrl).hostname.replace('www.', '').split('.')[0]
+  const siteName = siteNameFrom(new URL(siteUrl).hostname)
   const defaultName = siteName.charAt(0).toUpperCase() + siteName.slice(1)
 
   const config = {

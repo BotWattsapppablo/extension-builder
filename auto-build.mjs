@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { fetchRendered, isBotBlocked, closeBrowser } from './browser-fetch.mjs'
 import { safeQuery } from './query-safety.mjs'
 import { isPublicUrl } from './net-guard.mjs'
+import { siteNameFrom } from './site-name.mjs'
 import { smokeResult, stripVerdict } from './smoke-verdict.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -1633,10 +1634,38 @@ ${chapterListCode},
 
 // ── MAIN ────────────────────────────────────────────────────────────────────
 
+/**
+ * The id this build writes under. Two different sites must never land on the
+ * same id: `allporncomic.com` and `allporncomic.io` both reduced to
+ * "allporncomic", so the second build overwrote the first extension and its
+ * store entry, and the user simply lost a source they had installed.
+ */
+function uniqueSiteName(hostname, baseUrl) {
+  const preferred = siteNameFrom(hostname)
+  const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)
+  const tail = isIp ? [] : hostname.split('.').filter((l) => l && l !== preferred)
+  let port = ''
+  try { port = new URL(baseUrl).port } catch { /* no port */ }
+  const suffix = [...tail, port].filter(Boolean).join('-')
+  const qualifiers = [preferred, suffix ? `${preferred}-${suffix}` : `${preferred}-2`]
+  for (const name of qualifiers) {
+    const configPath = join(OUTPUT_DIR, `${name}.config.json`)
+    if (!existsSync(configPath)) return name
+    let owner = ''
+    try {
+      owner = String(JSON.parse(readFileSync(configPath, 'utf-8')).baseUrl || '')
+    } catch {
+      return name // unreadable: let this build replace it rather than fork ids
+    }
+    if (owner.replace(/\/+$/, '') === baseUrl.replace(/\/+$/, '')) return name
+  }
+  return qualifiers[qualifiers.length - 1]
+}
+
 async function autoBuild(siteUrl, opts = {}) {
   const smokeTest = opts.smokeTest !== false
   const baseUrl = new URL(siteUrl).origin
-  const siteName = new URL(siteUrl).hostname.replace('www.', '').split('.')[0]
+  const siteName = uniqueSiteName(new URL(siteUrl).hostname, baseUrl)
   const displayName = siteName.charAt(0).toUpperCase() + siteName.slice(1)
 
   console.log()
