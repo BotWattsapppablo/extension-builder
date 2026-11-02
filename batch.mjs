@@ -21,6 +21,7 @@ import { autoBuild, updateIndex, removeFromIndex } from './auto-build.mjs'
 import { closeBrowser } from './browser-fetch.mjs'
 import { isPublicHost } from './net-guard.mjs'
 import { smokeResult } from './smoke-verdict.mjs'
+import { nodeCommand } from './node-command.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -28,7 +29,7 @@ export const MAX_CONCURRENCY = 30
 export const DEFAULT_CONCURRENCY = 20
 const SMOKE_POOL_SIZE = 4
 const MAX_LINES_KEPT = 400
-const SMOKE_TIMEOUT_MS = 200_000
+const SMOKE_TIMEOUT_MS = 300_000
 const ANSI = /\x1b\[[0-9;]*m/g
 
 const store = new AsyncLocalStorage()
@@ -115,6 +116,7 @@ function publicJob(job) {
     file: job.file,
     sha: job.sha,
     checks: job.checks,
+    textSite: !!job.textSite,
     error: job.error,
     startedAt: job.startedAt,
     endedAt: job.endedAt,
@@ -131,8 +133,10 @@ function runSmoke(jsPath, sem) {
   return sem.run(
     () =>
       new Promise((resolve) => {
-        const child = spawn(process.execPath, [join(__dirname, 'test-extension.mjs'), jsPath], {
-          windowsHide: true
+        const host = nodeCommand()
+        const child = spawn(host.command, [join(__dirname, 'test-extension.mjs'), jsPath], {
+          windowsHide: true,
+          env: host.env
         })
         let buffer = ''
         let full = ''
@@ -192,6 +196,7 @@ export function runBatch(urls, options = {}) {
       endedAt: 0,
       lines: [],
       needsHuman: false,
+      textSite: false,
       emit(line) {
         if (/CLICK THE BOX IN THE BROWSER WINDOW/.test(line)) job.needsHuman = true
         job.lines.push(line)
@@ -221,14 +226,19 @@ export function runBatch(urls, options = {}) {
           job.status = 'testing'
           onEvent('job', publicJob(job))
           job.checks = await store.run(job, () => runSmoke(job.file, smokeSem))
-          if (!job.checks.allOk) {
+          if (!job.checks.allOk && !job.checks.textOnly) {
             // One retry: one request failing at the far end looks exactly like a
             // broken extension, and pulling a working one out of the store is
-            // worse than taking a few more seconds to be sure.
+            // worse than taking a few more seconds to be sure. A text-only
+            // source is excluded — a second run reads the same prose.
             job.emit('↻ first test run failed — testing once more before deciding')
             const again = await store.run(job, () => runSmoke(job.file, smokeSem))
             if (again.allOk) job.checks = again
           }
+        }
+        if (job.checks && job.checks.textOnly) {
+          job.textSite = true
+          job.emit('📖 text-only source — its chapters are prose, not images, so a reader has nothing to show')
         }
         const verified = !!job.checks && job.checks.allOk
         if (result?.entry) {

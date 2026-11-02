@@ -1,4 +1,4 @@
-# 🧩 MihonPC Extension Builder
+# 🧩 Yomi Builder
 
 Generate a working MihonPC manga extension from **just a URL**.
 
@@ -49,7 +49,7 @@ Verified working: **mangapill.com** (6/6), **mangahere.cc** (7/7),
 
 ## 🖥️ Desktop app — build many sites at once
 
-Double-click **`Extension Builder.exe`** (on the Desktop, or in this folder).
+Double-click **`Yomi Builder.exe`** (on the Desktop, or in this folder).
 No browser, no server — it's a real window.
 
 The `.exe` is a small native launcher: it finds this folder, finds `node`, and
@@ -187,5 +187,5 @@ Known limitations (reported honestly during the build):
 | `generate-extension.mjs` | Extension code generator (library) |
 | `browser-fetch.mjs` | Headed-Chromium fallback for bot-gated / JS-only sites |
 | `batch.mjs` | Concurrent build engine (worker pool + per-job logs) used by the app |
-| `app/` | Electron desktop app — `Extension Builder.exe` / `Build App.bat` / `npm run app` |
-| `make-exe.mjs` | Compiles the native `Extension Builder.exe` launcher |
+| `app/` | Electron desktop app — `Yomi Builder.exe` / `Build App.bat` / `npm run app` |
+| `make-exe.mjs` | Compiles the native `Yomi Builder.exe` launcher |

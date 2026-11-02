@@ -72,7 +72,7 @@ async function runWizard(initialUrl = null) {
   const rl = createRl()
 
   console.log('\n╔══════════════════════════════════════════════════════════╗')
-  console.log('║       🧩 MihonPC Extension Builder — Wizard            ║')
+  console.log('║       🧩 Yomi Builder — Wizard                         ║')
   console.log('╚══════════════════════════════════════════════════════════╝\n')
 
   // Step 1: Get the URL
@@ -201,7 +201,7 @@ async function runWizard(initialUrl = null) {
 
   // Build or update index.json
   const indexPath = join(OUTPUT_DIR, 'index.json')
-  let index = { name: 'Extension Builder Output', apiVersion: 1, extensions: [] }
+  let index = { name: 'Yomi Builder Output', apiVersion: 1, extensions: [] }
   if (existsSync(indexPath)) {
     try {
       index = JSON.parse(readFileSync(indexPath, 'utf-8'))
@@ -248,7 +248,7 @@ async function buildFromConfig(configPath) {
   console.log(`  ✅ Extension saved:  ${jsPath}`)
 
   const indexPath = join(OUTPUT_DIR, 'index.json')
-  let index = { name: 'Extension Builder Output', apiVersion: 1, extensions: [] }
+  let index = { name: 'Yomi Builder Output', apiVersion: 1, extensions: [] }
   if (existsSync(indexPath)) {
     try {
       index = JSON.parse(readFileSync(indexPath, 'utf-8'))
@@ -274,7 +274,7 @@ const args = process.argv.slice(2)
 
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`
-MihonPC Extension Builder
+Yomi Builder
 
 Usage:
   node build-extension.mjs                        Interactive wizard

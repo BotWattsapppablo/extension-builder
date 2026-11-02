@@ -1,8 +1,8 @@
 {
-  "name": "mihonpc-extension-builder-app",
+  "name": "yomi-builder-app",
   "version": "1.0.0",
   "private": true,
-  "description": "Desktop front-end for the MihonPC extension builder (batch mode)",
+  "description": "Desktop front-end for Yomi Builder (batch extension generation)",
   "type": "module",
   "main": "main.mjs"
 }

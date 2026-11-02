@@ -21,7 +21,9 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { makeSandbox, install, UA } from './ext-sandbox.mjs'
-import { searchTerm } from './query-safety.mjs'
+import { searchTerms } from './query-safety.mjs'
+import { isEpisodeLabel } from './title-safety.mjs'
+import { TEXT_SITE_MARK } from './text-safety.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OUTPUT_DIR = join(HERE, 'output')
@@ -114,13 +116,21 @@ async function auditOne(jsPath, sandbox) {
     rec.issues.push('page2_errors')
   }
 
-  // 3. search must find something
-  const term = searchTerm(popular[0].title)
-  try {
-    const found = await call(ext.searchManga, 1, term)
-    if (!Array.isArray(found) || found.length === 0) rec.issues.push('search_empty')
-  } catch (e) {
-    rec.issues.push('search_errors')
+  // 3. search must find something, given the site's own titles
+  {
+    const terms = searchTerms(popular.slice(0, 3).map((m) => m?.title))
+    const tries = terms.length ? terms : ['one piece']
+    let hit = false
+    let errors = 0
+    for (const term of tries) {
+      try {
+        const found = await call(ext.searchManga, 1, term)
+        if (Array.isArray(found) && found.length > 0) { hit = true; break }
+      } catch {
+        errors++
+      }
+    }
+    if (!hit) rec.issues.push(errors === tries.length ? 'search_errors' : 'search_empty')
   }
 
   // 4. details
@@ -128,6 +138,9 @@ async function auditOne(jsPath, sandbox) {
   try {
     details = await call(ext.getMangaDetails, { ...popular[0] })
     if (!details?.title) rec.issues.push('no_title')
+    // The library shows this string as the series name. When it is really the
+    // chapter heading, every other check still passes, so count it on its own.
+    else if (isEpisodeLabel(details.title) && !isEpisodeLabel(popular[0]?.title)) rec.issues.push('episode_title')
     if (!details?.description) rec.issues.push('no_description')
     if (!details?.thumbnailUrl) rec.issues.push('no_cover')
     if (!details?.status || details.status === 'unknown') rec.issues.push('status_unknown')
@@ -155,7 +168,10 @@ async function auditOne(jsPath, sandbox) {
   try {
     pages = await call(ext.getPageList, chapter)
   } catch (e) {
-    return bail('no_pages', explain(e))
+    // A novel site fails here for a reason no selector can fix: the chapter is
+    // prose. Count that apart from a lost image list, or the audit blames the
+    // builder for the shape of the source.
+    return bail(String(e?.message || '').includes(TEXT_SITE_MARK) ? 'text_only_source' : 'no_pages', explain(e))
   }
   if (!Array.isArray(pages) || pages.length === 0) return bail('no_pages', 'list is empty')
   const urls = pages.map((p) => (typeof p === 'string' ? p : p?.url))

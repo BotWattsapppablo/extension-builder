@@ -1,7 +1,7 @@
 {
-  "name": "mihonpc-extension-builder",
+  "name": "yomi-builder",
   "version": "1.0.0",
-  "description": "CLI tool to generate MihonPC extensions from any manga website",
+  "description": "Yomi Builder — generate MihonPC/Yomi extensions from any manga website",
   "type": "module",
   "main": "index.mjs",
   "scripts": {

@@ -131,7 +131,7 @@ writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
 // Update index
 const indexPath = join(OUTPUT_DIR, 'index.json')
-let index = { name: 'Extension Builder Output', apiVersion: 1, extensions: [] }
+let index = { name: 'Yomi Builder Output', apiVersion: 1, extensions: [] }
 if (existsSync(indexPath)) {
   try { index = JSON.parse(readFileSync(indexPath, 'utf-8')) } catch { /* fresh */ }
 }

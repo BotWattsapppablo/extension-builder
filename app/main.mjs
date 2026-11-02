@@ -44,7 +44,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 620,
     backgroundColor: '#0d0d12',
-    title: 'MihonPC Extension Builder',
+    title: 'Yomi Builder',
     autoHideMenuBar: true,
     ...(existsSync(icon) ? { icon } : {}),
     webPreferences: {

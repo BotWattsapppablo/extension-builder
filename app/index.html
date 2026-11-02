@@ -3,17 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'" />
-    <title>MihonPC Extension Builder</title>
+    <title>Yomi Builder</title>
+    <link rel="icon" type="image/png" href="icon.png" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
-        <span class="logo">M</span>
+        <img class="logo" src="icon.png" alt="" />
         <div class="brand-text">
-          <h1>Extension Builder</h1>
-          <p>paste sites · build them all at once</p>
+          <h1>Yomi Builder</h1>
+          <p id="tagline">paste sites · build them all at once</p>
         </div>
+        <span class="signal" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
       </div>
       <div class="stats" id="stats"></div>
     </header>

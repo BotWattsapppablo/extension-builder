@@ -19,6 +19,10 @@
  *      (login/search forms) is NOT a gate; treating it as one made the tool go
  *      on clicking after the site had already let us in.
  *
+ * A fourth gate is not ours to pass: some sites challenge per path even after
+ * letting a page through. Those get a short look, not 150 seconds of reloading —
+ * see `clearedOrigins`.
+ *
  * The profile is persistent (`.browser-profile…/`) so a human-only challenge is
  * solved once. Calls are serialised — one window at a time, however big the
  * batch — and the context must be closed with `closeBrowser()`.
@@ -213,6 +217,26 @@ async function safeContent(page) {
 let renderLock = Promise.resolve()
 
 /**
+ * Origins this session has already rendered unguarded. A host that let one page
+ * through and then challenges the next one is guarding path by path, and that
+ * wall does not come down for waiting or clicking — measured on mangalik.net,
+ * where the homepage answers and /latest-updates and /manga-lists/ both sit on
+ * "Just a moment…" identically in a fresh tab and a reused one.
+ */
+const clearedOrigins = new Set()
+
+/** Origins that proved the above, so their later URLs get one look, not a wait. */
+const hostileGates = new Set()
+
+function originOf(url) {
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
+  }
+}
+
+/**
  * Render `url` in a real browser and return { status, text, finalUrl, xhrJson }.
  * `xhrJson` is every JSON response the page's own scripts made while loading.
  */
@@ -255,8 +279,23 @@ async function render(url, referer = '') {
   // one needs its checkbox clicked — by us, or, when Cloudflare insists on a
   // real human, by the user in this window. Once the gate is gone we stop
   // touching the page: clicking again is what restarts the challenge.
-  const deadline = Date.now() + 150_000
-  const sparseDeadline = Date.now() + 25_000
+  //
+  // One case is never worth waiting for: this session already rendered a page
+  // from the host and the next one is challenged anyway. Measured on
+  // mangalik.net, whose homepage passes while /latest-updates and /manga-lists/
+  // sit on "Just a moment…" identically in a fresh tab and a reused one. That
+  // wall is per-path, and waiting 150s on it — once per URL, ten URLs a build —
+  // is what looks to the user like an endless reload that builds nothing.
+  const origin = originOf(url)
+  const provedPerPath = hostileGates.has(origin)
+  const patient = !provedPerPath && !clearedOrigins.has(origin)
+  // First contact this session gets the full wait, because a human may still
+  // have a box to click. A host that cleared one page and challenged the next
+  // gets a short look; one that has already proved it does this gets barely one.
+  const patienceMs = provedPerPath ? 5_000 : patient ? 150_000 : 20_000
+  const deadline = Date.now() + patienceMs
+  const maxReloads = patient ? 6 : 2
+  const sparseDeadline = Date.now() + (patient ? 25_000 : 5_000)
   let clicked = false
   let askedHuman = false
   // Cloudflare reloads the page each time it re-issues a challenge. A handful of
@@ -268,6 +307,12 @@ async function render(url, referer = '') {
   })
   const gatedFrom = navigations
   let outcome = 'clear'
+  /** Name the one gate that is not ours to pass, and stop spending time on it. */
+  const noteHostile = () => {
+    hostileGates.add(origin)
+    console.log('   🔒 this site guards page by page: it let one page through and is still')
+    console.log('      challenging the rest, so no click or wait opens them. Read as-is.')
+  }
   for (let i = 0; ; i++) {
     const gate = await gateState(page)
     if (gate === 'clear') break
@@ -283,22 +328,31 @@ async function render(url, referer = '') {
       break
     }
     if (Date.now() > deadline) {
-      outcome = 'timeout'
-      console.log('   ⏳ the gate never cleared — the page is being read as-is')
+      if (patient) {
+        outcome = 'timeout'
+        console.log('   ⏳ the gate never cleared — the page is being read as-is')
+      } else {
+        outcome = 'loop'
+        noteHostile()
+      }
       break
     }
-    if (navigations - gatedFrom >= 6) {
+    if (navigations - gatedFrom >= maxReloads) {
       outcome = 'loop'
-      console.log('   🔁 the gate keeps re-issuing itself for this browser — giving up on it')
-      console.log('      (open the site once in your own browser; if it lets you in,')
-      console.log('       re-run the build — the profile may carry the clearance)')
+      if (patient) {
+        console.log('   🔁 the gate keeps re-issuing itself for this browser — giving up on it')
+        console.log('      (open the site once in your own browser; if it lets you in,')
+        console.log('       re-run the build — the profile may carry the clearance)')
+      } else {
+        noteHostile()
+      }
       break
     }
     if (!clicked && (i === 1 || i === 8 || i === 16)) {
       clicked = await clickTurnstile(page)
       if (clicked) console.log('   🖱️  clicked "Verify you are human"')
     }
-    if (i >= 6 && !askedHuman) {
+    if (patient && i >= 6 && !askedHuman) {
       askedHuman = true
       await page.bringToFront().catch(() => {})
       // One line: the app shows the newest log line as the job's status.
@@ -307,9 +361,16 @@ async function render(url, referer = '') {
     await page.waitForTimeout(1500)
   }
 
-  await page.waitForLoadState('networkidle').catch(() => {})
+  // Remember that this host answered us. A challenge on its *next* page is then
+  // proof of a per-path rule rather than a test we might yet pass.
+  if (outcome === 'clear') clearedOrigins.add(origin)
+
+  // A challenge page never goes idle — it is a script polling itself — so
+  // waiting the full 30s for networkidle on a page we have already given up on
+  // is the other half of the reload storm.
+  await page.waitForLoadState('networkidle', patient ? undefined : { timeout: 3_000 }).catch(() => {})
   // Client-rendered lists mount after networkidle; give the islands a beat.
-  if (outcome !== 'blocked') await page.waitForTimeout(1200)
+  if (outcome !== 'blocked') await page.waitForTimeout(patient ? 1200 : 300)
 
   const text = await safeContent(page)
   const finalUrl = page.url()

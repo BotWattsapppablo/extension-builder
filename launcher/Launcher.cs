@@ -5,7 +5,7 @@ using System.IO;
 using System.Text;
 using System.Windows.Forms;
 
-// Extension Builder.exe — the double-click entry point.
+// Yomi Builder.exe — the double-click entry point.
 //
 // It is only a launcher: it finds the "extension builder" project folder, finds
 // node.exe, and runs start-app.mjs, which opens the real window. Nothing is
@@ -17,7 +17,7 @@ static class Launcher
     {
         // A winexe has no console, so an escaping exception would vanish silently.
         try { Start(); }
-        catch (Exception ex) { Fail("Extension Builder could not start.\n\n" + ex.Message); }
+        catch (Exception ex) { Fail("Yomi Builder could not start.\n\n" + ex.Message); }
     }
 
     static void Start()
@@ -144,8 +144,8 @@ static class Launcher
                 WritePointer(SettingsFile(), project);
                 return true;
             }
-            if (MessageBox.Show("That folder is not the extension builder.\n\nTry another one?",
-                    "Extension Builder", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            if (MessageBox.Show("That folder is not the Yomi Builder project.\n\nTry another one?",
+                    "Yomi Builder", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
                 return false;
         }
     }
@@ -154,7 +154,7 @@ static class Launcher
     {
         string appData = Environment.GetEnvironmentVariable("APPDATA");
         if (string.IsNullOrEmpty(appData)) appData = Path.GetTempPath();
-        return Path.Combine(appData, "MihonPC Extension Builder", "project.txt");
+        return Path.Combine(appData, "Yomi Builder", "project.txt");
     }
 
     // ── finding node ─────────────────────────────────────────────────────────
@@ -216,6 +216,6 @@ static class Launcher
 
     static void Fail(string message)
     {
-        MessageBox.Show(message, "Extension Builder", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        MessageBox.Show(message, "Yomi Builder", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }

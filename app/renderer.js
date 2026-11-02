@@ -13,6 +13,7 @@ const els = {
   jobs: document.getElementById('jobs'),
   empty: document.getElementById('empty'),
   stats: document.getElementById('stats'),
+  tagline: document.getElementById('tagline'),
   progress: document.getElementById('progress'),
   bar: document.getElementById('bar'),
   error: document.getElementById('error')
@@ -52,6 +53,16 @@ function renderStats(counts) {
   const finished = c.done + c.warn + c.failed
   els.bar.style.width = c.total ? `${Math.round((finished / c.total) * 100)}%` : '0%'
   els.progress.classList.toggle('active', active > 0)
+  // One flag drives every "work is in flight" animation in styles.css — the
+  // rail, the logo halo, the meter and the sweep across the job list.
+  document.body.classList.toggle('busy', active > 0)
+  if (els.tagline) {
+    els.tagline.textContent = active
+      ? `fetching ${active} of ${c.total} · ${finished} done`
+      : c.total
+        ? `batch over · ${c.done + c.warn} built, ${c.failed} failed`
+        : 'paste sites · build them all at once'
+  }
 }
 
 /* ── job rows ──────────────────────────────────────────────────────────── */
@@ -80,7 +91,13 @@ function rowInner(job) {
   const tailCls = job.status === 'failed' ? 'bad' : job.status === 'done' ? 'ok' : ''
   const file = job.file ? job.file.split(/[\\/]/).pop() : ''
   const badge = job.needsHuman ? 'human' : job.status
-  const label = job.needsHuman ? 'click the browser window' : LABEL[job.status] || job.status
+  // A novel site builds fine and simply has nothing to read; say so instead of
+  // letting the row look like a failed extraction.
+  const label = job.needsHuman
+    ? 'click the browser window'
+    : job.textSite
+      ? 'text site · no images'
+      : LABEL[job.status] || job.status
   return `
     <span class="job-num">${job.id}</span>
     <span class="job-site" title="${job.url}">${host}<small${file ? ` class="job-file" data-file="${escapeHtml(job.file)}"` : ''}>${file || path || '/'}</small></span>
@@ -108,6 +125,9 @@ function renderJobs() {
       els.jobs.appendChild(row)
     }
     row.innerHTML = rowInner(job)
+    row.dataset.state = job.needsHuman ? 'human' : job.status
+    // The checks column is a meter, not a number: --pct is how full it draws.
+    row.style.setProperty('--pct', job.checks && job.checks.total ? `${Math.round((job.checks.passed / job.checks.total) * 100)}%` : '0%')
     row.classList.toggle('open', state.openId === job.id)
   }
 }

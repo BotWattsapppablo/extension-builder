@@ -12,8 +12,11 @@
  */
 import * as cheerio from 'cheerio'
 
-export const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+// What the app itself puts on the wire when an extension does not say
+// otherwise (src/main/extensions/extension-registry.ts). The sandbox used to
+// substitute a Chrome UA here, which quietly passed every extension that only
+// works because *it* asks for a browser — the test was kinder than the app.
+export const UA = 'Yomi/0.0.0 (Windows) Yomi-ExtensionHost/1'
 export const MAX_DOCS = 3 // MAX_DOCS_PER_SESSION
 export const MAX_ELEMENTS = 3000 // MAX_ELEMENTS_PER_SESSION
 
@@ -64,45 +67,73 @@ export function makeSandbox() {
       sessions.set(id, { kind: 'doc', $ })
       docCount++
       return id
-    },
-    select(rootId, selector) {
+    },    select(rootId, selector) {
       if (typeof selector !== 'string' || selector.length === 0 || selector.length > 500) throw new Error('html.select: bad selector')
-      const entry = sessions.get(rootId)
+      const entry = sessions.get(handle('select', rootId))
       if (!entry) throw new Error(`html handle ${rootId} not found (expired or invalid)`)
       const scope = entry.kind === 'doc' ? entry.$.root() : entry.el
       return scope.find(selector).toArray().slice(0, MAX_ELEMENTS).map((n) => addEl(entry.$, entry.$(n)))
     },
     selectFirst(rootId, selector) {
-      const ids = html.select(rootId, selector)
+      const ids = html.select(handle('selectFirst', rootId), selector)
       return ids.length > 0 ? ids[0] : null
     },
     text(id) {
-      const entry = sessions.get(id)
+      const entry = sessions.get(handle('text', id))
       if (!entry) throw new Error(`html handle ${id} not found`)
       return entry.kind === 'doc' ? entry.$('body').text() : entry.el.text()
     },
     attr(id, name) {
       if (typeof name !== 'string' || name.length > 100) throw new Error('html.attr: bad attribute name')
-      const entry = sessions.get(id)
+      const entry = sessions.get(handle('attr', id))
       if (!entry) throw new Error(`html handle ${id} not found`)
       if (entry.kind === 'doc') throw new Error('html.attr on document is not supported')
       return entry.el.attr(name) ?? null
     },
     selectText(rootId, selector) {
-      return html.select(rootId, selector).map((id) => html.text(id).trim())
+      return html.select(handle('selectText', rootId), selector).map((id) => html.text(id).trim())
     },
     selectAttr(rootId, selector, name) {
-      return html.select(rootId, selector).map((id) => html.attr(id, name))
+      return html.select(handle('selectAttr', rootId), selector).map((id) => html.attr(id, name))
     }
   }
 
+  /**
+   * The host rejects a non-integer root with `html.<action>: root handle
+   * required` before it ever looks the handle up, so do the same — a Promise
+   * where a handle belongs has to fail here, not silently resolve later.
+   */
+  function handle(action, value) {
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+      throw new Error(`html.${action}: root handle required (got ${describe(value)})`)
+    }
+    return value
+  }
+
+  /** Say what was actually passed, since "got a Promise" is the whole diagnosis. */
+  function describe(value) {
+    if (value && typeof value.then === 'function') return 'a Promise — did you forget to await html.load?'
+    if (value === null) return 'null'
+    if (Array.isArray(value)) return 'an array'
+    return typeof value
+  }
+
+  // The real host answers every html call over an async bridge. A synchronous
+  // sandbox hides the whole class of "forgot to await html.load" bugs: the
+  // Promise lands inside an object, reads as a handle here, and reaches Yomi as
+  // "html.selectText: root handle required". Everything the extension sees is
+  // therefore a Promise, exactly like the app.
+  const asyncHtml = Object.fromEntries(
+    Object.entries(html).map(([name, fn]) => [name, async (...args) => fn(...args)])
+  )
+
   return {
     http,
-    html,
+    html: asyncHtml,
     reset,
     globals: {
       http,
-      html,
+      html: asyncHtml,
       cache: { get: async () => null, set: async () => ({ ok: true }) },
       prefs: { get: async () => null, set: async () => ({ ok: true }) },
       log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }

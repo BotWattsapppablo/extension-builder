@@ -1,5 +1,5 @@
 /**
- * make-exe.mjs — build "Extension Builder.exe".
+ * make-exe.mjs — build "Yomi Builder.exe".
  *
  * Uses the C# compiler that already ships with Windows (.NET Framework), so
  * nothing is downloaded and the result is a small native launcher. It is not a
@@ -18,8 +18,9 @@ import { homedir, userInfo } from 'node:os'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const LAUNCHER_DIR = join(__dirname, 'launcher')
 const BUILD_DIR = join(LAUNCHER_DIR, 'build')
-const EXE_NAME = 'Extension Builder.exe'
+const EXE_NAME = 'Yomi Builder.exe'
 const ICON = join(BUILD_DIR, 'app-icon.ico')
+const ARTWORK = join(__dirname, 'app', 'icon.png')
 
 function findCsc() {
   const root = 'C:\\Windows\\Microsoft.NET\\Framework64'
@@ -40,7 +41,7 @@ mkdirSync(BUILD_DIR, { recursive: true })
 
 // 1. icon
 run(csc, ['/nologo', '/target:exe', '/out:' + join(BUILD_DIR, 'IconTool.exe'), '/r:System.Drawing.dll', join(LAUNCHER_DIR, 'IconTool.cs')])
-console.log('icon:     ' + run(join(BUILD_DIR, 'IconTool.exe'), [ICON]))
+console.log('icon:     ' + run(join(BUILD_DIR, 'IconTool.exe'), [ICON, ARTWORK]))
 copyFileSync(ICON, join(__dirname, 'app', 'icon.ico'))
 
 // 2. launcher

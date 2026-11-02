@@ -20,12 +20,24 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fetchRendered, isBotBlocked, closeBrowser } from './browser-fetch.mjs'
 import { safeQuery } from './query-safety.mjs'
+import { isEpisodeLabel, titleHelpersSource } from './title-safety.mjs'
+import { TEXT_SITE_MARK, textHelpersSource } from './text-safety.mjs'
 import { isPublicUrl } from './net-guard.mjs'
 import { siteNameFrom } from './site-name.mjs'
 import { smokeResult, stripVerdict } from './smoke-verdict.mjs'
+import { nodeCommand } from './node-command.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const OUTPUT_DIR = join(__dirname, 'output')
+
+/**
+ * The UA every generated extension sends. The app's own default is
+ * "Yomi/… Yomi-ExtensionHost/…", and a hotlink-protecting CDN answers that with
+ * 403 — the list loads, the pages do not. The bridge forwards whatever headers
+ * an extension asks for (safe-http.ts takes `user-agent` from the request when
+ * present), so the extension can simply stop looking like a bot.
+ */
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 /**
  * output/index.json is read-modify-write, so concurrent builds (the batch app
@@ -36,7 +48,7 @@ let indexLock = Promise.resolve()
 function updateIndex(entry) {
   const task = indexLock.then(async () => {
     const indexPath = join(OUTPUT_DIR, 'index.json')
-    let index = { name: 'Extension Builder Output', apiVersion: 1, extensions: [] }
+    let index = { name: 'Yomi Builder Output', apiVersion: 1, extensions: [] }
     if (existsSync(indexPath)) {
       try { index = JSON.parse(readFileSync(indexPath, 'utf-8')) } catch { /* fresh */ }
     }
@@ -488,8 +500,15 @@ function detectDetailsSelectors($) {
   let titleSel = 'h1'
   for (const sel of titleCandidates) {
     try {
-      const m = $(sel)
-      if (m.length > 0 && m.first().text().trim().length > 1 && !/^(ongoing|completed|hiatus)$/i.test(m.first().text().trim())) { titleSel = sel; break }
+      const texts = $(sel).toArray().map((el) => $(el).text().replace(/\s+/g, ' ').trim()).filter(Boolean)
+      if (texts.length === 0) continue
+      if (/^(ongoing|completed|hiatus)$/i.test(texts[0])) continue
+      // Several <h1>s is normal on an episode page: the first is the chapter
+      // heading, the series name is one of the others. A selector is only wrong
+      // when every node it matches is an episode label.
+      if (texts.every(isEpisodeLabel)) continue
+      titleSel = sel
+      break
     } catch { /* skip */ }
   }
 
@@ -972,7 +991,11 @@ function detectPagination($page, listingUrl) {
     if (!href || seen.has(href)) return
     seen.add(href)
     if (!href.startsWith(listingUrl.split('?')[0]) && !href.startsWith('/')) return
-    let m = /[?&](page|p)=(\d+)/i.exec(href)
+    // Known param names first, then any param whose *name* says page/pag: sites
+    // call it ?listing-page=, ?book_page=, ?tgPageCat= and a listing the builder
+    // cannot page through is a catalogue search that finds nothing past page 1.
+    let m = /[?&](page|p|pg|pn|paged|page_no|pageid|listpage|listing-page)=([\d]{1,5})/i.exec(href)
+    if (!m) m = /[?&]([a-z0-9_.-]*(?:page|pag)[a-z0-9_.-]*)=(\d{1,5})/i.exec(href)
     if (m && Number(m[2]) >= 2) { found = { type: 'query', param: m[1] }; return false }
     m = /\/page\/(\d+)/i.exec(href)
     if (m && Number(m[1]) >= 2) { found = { type: 'path' }; return false }
@@ -1167,18 +1190,20 @@ function generateCode(config) {
   const { id, name, lang, baseUrl, supportsLatest, isNsfw, version, needsReferer, selectors, urls, cardTitleAttr } = config
   const cleanBase = baseUrl.replace(/\/+$/, '')
 
-  const refererBlock = needsReferer ? `
+  // Covers and pages are fetched by the app's image cache, which sends the
+  // app's own UA unless the source hands it one — so every image reference
+  // carries the browser UA, whether or not this site also needs a referer.
+  const imageHeaders = needsReferer ? "referer: BASE + '/', 'user-agent': UA" : "'user-agent': UA"
+  const refererBlock = `
 function imageRef(imgUrl) {
   if (!imgUrl) return undefined
-  return { url: imgUrl, headers: { referer: BASE + '/' } }
+  return { url: imgUrl, headers: { ${imageHeaders} } }
 }
-` : ''
+`
 
-  const thumbExpr = needsReferer ? 'imageRef(thumb)' : 'thumb || undefined'
-  const coverExpr = needsReferer ? 'imageRef(cover)' : 'cover || manga.thumbnailUrl'
-  const pageRefExpr = needsReferer
-    ? '{ url: url, headers: { referer: BASE + \'/\' } }'
-    : '{ url: url }'
+  const thumbExpr = 'imageRef(thumb)'
+  const coverExpr = 'imageRef(cover) || manga.thumbnailUrl'
+  const pageRefExpr = `{ url: url, headers: { ${imageHeaders} } }`
 
   // URL expressions
   const pageGuard = config.singlePage ? '\n    if (page > 1) return []' : ''
@@ -1206,6 +1231,13 @@ function imageRef(imgUrl) {
       .replace(/\{page\}/g, '${page}')
       .replace(/\{query\}/g, '${encodeURIComponent(query)}')
     : null
+
+  // How many listing pages the catalogue search walk may open: the bridge lets
+  // one invoke load 3 documents, and a measured search endpoint spends one of
+  // them before the walk starts. A listing whose URL cannot vary by page is the
+  // same document every time, so walking it twice only spends the budget.
+  const listingPaged = String(urls.popular || '').includes('{page}')
+  const walkLimit = listingPaged ? (searchUrl ? 2 : 3) : 1
 
   // Chapter list handling
   const chapterIsSelfLink = selectors.chapters.isSelfLink
@@ -1265,7 +1297,7 @@ function imageRef(imgUrl) {
 
     // 1) one-shot: ask for everything
     try {
-      var res = await http.getJson(api + sep + 'limit=5000')
+      var res = await http.getJson(api + sep + 'limit=5000', { headers: { 'user-agent': UA } })
       if (res.status < 400) add(extract(res.json))
     } catch (e) { /* fall through to pagination */ }
     if (all.length > 50) return all
@@ -1277,7 +1309,7 @@ function imageRef(imgUrl) {
     for (var offset = 0; offset < 5000; offset += 50) {
       var res2
       try {
-        res2 = await http.getJson(api + sep + 'offset=' + offset)
+        res2 = await http.getJson(api + sep + 'offset=' + offset, { headers: { 'user-agent': UA } })
         if (res2.status >= 400) throw new Error('HTTP ' + res2.status)
       } catch (e) {
         if (offset === 0) paramsOk = false  // API rejects params — try bare once
@@ -1292,7 +1324,7 @@ function imageRef(imgUrl) {
     }
     if (all.length === 0 && !paramsOk) {
       try {
-        var res3 = await http.getJson(api)
+        var res3 = await http.getJson(api, { headers: { 'user-agent': UA } })
         if (res3.status < 400) all = extract(res3.json)
       } catch (e) { /* nothing worked */ }
     }
@@ -1356,6 +1388,7 @@ function imageRef(imgUrl) {
 'use strict'
 
 var BASE = '${cleanBase}'
+var UA = '${BROWSER_UA}'
 var CARD = '${selectors.card}'
 ${refererBlock}
 function absolute(href) {
@@ -1375,6 +1408,17 @@ function mapStatus(text) {
   return 'unknown'
 }
 
+// Episode-style themes render the chapter heading as the page's first <h1> and
+// keep the series name for a later one. These two are the builder's own rule,
+// copied verbatim, so a title that reads as an episode here reads as one in
+// the harness too.
+${titleHelpersSource}
+
+// A novel site's chapter is paragraphs, not pictures. Same rule, copied from
+// the builder's own source, so the extension, the harness and the app all call
+// a source "text-only" on exactly the same evidence.
+${textHelpersSource}
+
 function afterLabel(t) {
   t = String(t || '').trim()
   var i = t.indexOf(':')
@@ -1388,15 +1432,15 @@ function parseChapterNumber(title) {
 }
 
 async function getHtml(pageUrl) {
-  var res = await http.getText(pageUrl, { headers: { accept: 'text/html' } })
+  var res = await http.getText(pageUrl, { headers: { accept: 'text/html', 'user-agent': UA } })
   if (res.status >= 400) throw new Error('${name}: HTTP ' + res.status + ' for ' + pageUrl)
   return html.load(res.text)
 }
 
 async function getRaw(pageUrl) {
-  var res = await http.getText(pageUrl, { headers: { accept: 'text/html' } })
+  var res = await http.getText(pageUrl, { headers: { accept: 'text/html', 'user-agent': UA } })
   if (res.status >= 400) throw new Error('${name}: HTTP ' + res.status + ' for ' + pageUrl)
-  return { text: res.text, doc: html.load(res.text) }
+  return { text: res.text, doc: await html.load(res.text) }
 }
 
 function pageRef(src) {
@@ -1515,6 +1559,43 @@ async function browsePopular(page) {
   return parseCards(doc)
 }
 
+async function catalogueSearch(q, page, limit) {
+  var out = []
+  var seen = {}
+  function matches(title) {
+    title = String(title || '').toLowerCase()
+    if (q === '' || title.indexOf(q) !== -1) return true
+    // Listing titles are punctuated and reordered compared with what the app
+    // sends; requiring every word still keeps unrelated series out.
+    var words = q.split(/[^0-9a-zà-ÿ]+/i).filter(Boolean)
+    if (words.length === 0) return false
+    for (var k = 0; k < words.length; k++) {
+      if (title.indexOf(words[k]) === -1) return false
+    }
+    return true
+  }
+  // One invoke may load at most 3 documents (the bridge's budget), so the walk
+  // stops where the budget stops — see walkLimit below.
+  for (var i = 0; i < limit; i++) {
+    var cards = []
+    try {
+      cards = await browsePopular((page - 1) * limit + i + 1)
+    } catch (e) {
+      // A listing page that fails costs that page, not the search: one hiccup
+      // in the walk used to reach the app as "no results".
+      cards = []
+    }
+    if (cards.length === 0) { if (i === 0) break; continue }
+    for (var j = 0; j < cards.length; j++) {
+      var m = cards[j]
+      if (!m || seen[m.url]) continue
+      seen[m.url] = 1
+      if (matches(m.title)) out.push(m)
+    }
+  }
+  return out
+}
+
 module.exports = {
   id: '${id}',
   name: '${name}',
@@ -1539,35 +1620,28 @@ ${supportsLatest && latestUrl ? `
   searchManga: async function (page, query, filters) {
     if (typeof page === 'undefined') page = 1
     if (typeof query === 'undefined') query = ''${pageGuard}
-    var doc = await getHtml(\`${searchUrl}\`)
-    return parseCards(doc)
+    var q = String(query).toLowerCase().trim()
+    var found = []
+    try {
+      found = await parseCards(await getHtml(\`${searchUrl}\`))
+    } catch (e) {
+      found = []
+    }
+    // The endpoint the builder measured is the first guess, not the only one: a
+    // search page that answers with nothing looks exactly like a dead query.
+    if (found.length > 0) return found
+    return catalogueSearch(q, page, ${walkLimit})
   },` : `
   searchManga: async function (page, query, filters) {
     if (typeof page === 'undefined') page = 1
     if (typeof query === 'undefined') query = ''${pageGuard}
-    var q = String(query).toLowerCase()
-    var out = []
-    var seen = {}
-    // No working search endpoint: walk the catalogue instead. One call may
-    // load at most 3 documents (the bridge's per-call budget), so each search
-    // page scans a block of 3 listing pages and the app's own paging walks on.
-    for (var i = 0; i < 3; i++) {
-      var cards = await browsePopular((page - 1) * 3 + i + 1)
-      if (cards.length === 0) break
-      for (var j = 0; j < cards.length; j++) {
-        var m = cards[j]
-        if (seen[m.url]) continue
-        seen[m.url] = 1
-        if (q === '' || String(m.title || '').toLowerCase().indexOf(q) !== -1) out.push(m)
-      }
-    }
-    return out
+    return catalogueSearch(String(query).toLowerCase().trim(), page, ${walkLimit})
   },`}
 
   getMangaDetails: async function (manga) {
     var page = await getRaw(absolute(manga.url))
     var doc = page.doc
-    var title = asText((await html.selectText(doc, '${selectors.details.title}'))[0])
+    var title = pickSeriesTitle(await html.selectText(doc, '${selectors.details.title}'), manga.title)
     var description = ${selectors.details.descriptionAttr
       ? `asText((await html.selectAttr(doc, '${selectors.details.description.replace(/'/g, "\\'")}', '${selectors.details.descriptionAttr}'))[0])`
       : `asText((await html.selectText(doc, '${selectors.details.description.replace(/'/g, "\\'")}'))[0])`}
@@ -1625,7 +1699,13 @@ ${chapterListCode},
         if (anyRef && !seen[anyRef.url]) { seen[anyRef.url] = 1; pages.push(anyRef) }
       }
     }
-    if (pages.length === 0) throw new Error('${name}: no readable images found in this chapter')
+    if (pages.length === 0) {
+      // Two different failures wear the same face here: a page whose images we
+      // lost, and a page that never had any. Say which one it is.
+      throw new Error(isTextChapter(page.text)
+        ? '${name}: ${TEXT_SITE_MARK} — this site publishes prose chapters, not images'
+        : '${name}: no readable images found in this chapter')
+    }
     return pages
   }
 }
@@ -1670,7 +1750,7 @@ async function autoBuild(siteUrl, opts = {}) {
 
   console.log()
   console.log('╔══════════════════════════════════════════════════════════╗')
-  console.log('║      🧩 MihonPC Auto Extension Builder                  ║')
+  console.log('║      🧩 Yomi Auto Builder                               ║')
   console.log('╚══════════════════════════════════════════════════════════╝')
   console.log()
   console.log(`🌐 Target: ${siteUrl}`)
@@ -2007,9 +2087,11 @@ async function autoBuild(siteUrl, opts = {}) {
   // ── Smoke-test the generated extension right away ───────────────────
   console.log('🧪 Running end-to-end smoke test (live site)...\n')
   const { spawnSync } = await import('node:child_process')
-  const testRes = spawnSync(process.execPath, [join(__dirname, 'test-extension.mjs'), jsPath], {
+  const host = nodeCommand()
+  const testRes = spawnSync(host.command, [join(__dirname, 'test-extension.mjs'), jsPath], {
     encoding: 'utf8',
-    timeout: 180_000
+    env: host.env,
+    timeout: 300_000
   })
   const testOut = `${testRes.stdout || ''}${testRes.stderr || ''}`
   for (const line of stripVerdict(testOut).split(/\r?\n/)) {
@@ -2019,9 +2101,14 @@ async function autoBuild(siteUrl, opts = {}) {
   if (testRes.error) console.log(`   (test process: ${testRes.error.message})`)
   if (!test.allOk) {
     console.log()
-    console.log(`   ⚠️  The smoke test FAILED (${test.passed}/${test.total || '?'} checks) — this extension is NOT added to index.json.`)
-    console.log('      Fix output/' + siteName + '.config.json selectors, then rebuild:')
-    console.log(`      node build-extension.mjs --config output/${siteName}.config.json`)
+    if (test.textOnly) {
+      console.log(`   📖 ${siteName} publishes text chapters, not images — there is nothing for a reader to display.`)
+      console.log('      This is the source, not the build: browse, search, details and chapter list all passed.')
+    } else {
+      console.log(`   ⚠️  The smoke test FAILED (${test.passed}/${test.total || '?'} checks) — this extension is NOT added to index.json.`)
+      console.log('      Fix output/' + siteName + '.config.json selectors, then rebuild:')
+      console.log(`      node build-extension.mjs --config output/${siteName}.config.json`)
+    }
     await removeFromIndex(siteName)
     return { config, code, hash, jsPath, configPath, entry, tested: false }
   }

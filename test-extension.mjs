@@ -17,7 +17,9 @@ import { tmpdir } from 'node:os'
 import { join, basename, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { makeSandbox, install, UA } from './ext-sandbox.mjs'
-import { searchTerm } from './query-safety.mjs'
+import { searchTerms } from './query-safety.mjs'
+import { isEpisodeLabel } from './title-safety.mjs'
+import { TEXT_SITE_MARK } from './text-safety.mjs'
 
 const sandbox = makeSandbox()
 install(sandbox)
@@ -42,13 +44,16 @@ const ext = require(cjsPath)
 
 // ── Test runner ─────────────────────────────────────────────────────────────
 const results = []
-function report(name, ok, detail) {
-  results.push({ name, ok })
+function report(name, ok, detail, extra) {
+  results.push(extra ? { name, ok, ...extra } : { name, ok })
   console.log(`${ok ? '✅' : '❌'} ${name}${detail ? ` — ${detail}` : ''}`)
 }
 
 function fmt(item) {
-  return `"${(item?.title || item?.name || '?').slice(0, 40)}"`
+  const t = String(item?.title || item?.name || '?')
+  // A cut title must look cut. Slicing at 40 with no marker read as the
+  // extension losing the last word of the series name.
+  return `"${t.length > 40 ? `${t.slice(0, 39).trimEnd()}…` : t}"`
 }
 
 async function main() {
@@ -81,13 +86,26 @@ async function main() {
     }
   }
 
-  // 3. Search (with a term derived from the first popular title, else 'one piece')
+  // 3. Search, with the site's own titles as the terms. One title is not
+  //    proof: the first card can be a banner the catalogue does not index, so
+  //    several are tried before the check is called a failure.
   try {
-    resetSession()
-    const term = searchTerm(popular[0]?.title)
-    const found = await ext.searchManga(1, term)
+    const terms = searchTerms(popular.slice(0, 3).map((m) => m?.title))
+    let found = []
+    let used = terms[0] || 'one piece'
+    let lastError = null
+    for (const term of terms.length ? terms : ['one piece']) {
+      resetSession()
+      try {
+        const hit = await ext.searchManga(1, term)
+        if (Array.isArray(hit) && hit.length > 0) { found = hit; used = term; lastError = null; break }
+        lastError = null
+      } catch (e) {
+        lastError = e
+      }
+    }
     const ok = Array.isArray(found) && found.length > 0
-    report('searchManga(1, ...)', ok, `${found.length} results for "${term}"`)
+    report('searchManga(1, ...)', ok, ok ? `${found.length} results for "${used}"` : lastError ? `${lastError.message} (tried ${JSON.stringify(used)})` : `0 results for ${JSON.stringify(terms)}`)
   } catch (e) {
     report('searchManga(1, ...)', false, e.message)
   }
@@ -100,8 +118,13 @@ async function main() {
       resetSession()
       details = await ext.getMangaDetails({ ...first })
       const ok = details && details.title
+      // A title that is really the chapter heading passes "has a title" and
+      // still poisons the library, so the check has to say which one it got.
+      const episodeSwap = ok && isEpisodeLabel(details.title) && !isEpisodeLabel(first.title)
       const people = [details?.author, details?.artist].filter(Boolean).join(' / ')
-      report('getMangaDetails', ok, `${fmt(details)} status=${details?.status} genres=${details?.genres?.length ?? 0}${people ? ` | ${people}` : ''}`)
+      report('getMangaDetails', !!ok && !episodeSwap, episodeSwap
+        ? `title is the episode heading: ${fmt(details)} (card said ${JSON.stringify(first.title)})`
+        : `${fmt(details)} status=${details?.status} genres=${details?.genres?.length ?? 0}${people ? ` | ${people}` : ''}`)
     } catch (e) {
       report('getMangaDetails', false, e.message)
     }
@@ -153,7 +176,10 @@ async function main() {
           }
         }
       } catch (e) {
-        report('getPageList', false, e.message)
+        const textSite = String(e.message || '').includes(TEXT_SITE_MARK)
+        report('getPageList', false, textSite
+          ? '📖 TEXT SITE — the chapters are prose, not images, so a reader has nothing to show. The extension itself works.'
+          : e.message, textSite ? { textSite: true } : null)
       }
     }
   } else {

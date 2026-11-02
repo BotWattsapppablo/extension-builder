@@ -8,8 +8,15 @@
  * a crash is not a broken extension. Treating that crash as a failure used to
  * drop working sources, which is worse than the bug it was guarding against.
  */
+import { TEXT_SITE_MARK } from './text-safety.mjs'
 
 const PREFIX = 'VERDICT '
+
+/** A run whose getPageList said the chapter is prose, not a lost image list. */
+function isTextOnlyRun(checks, text) {
+  if (Array.isArray(checks)) return checks.some((c) => c && c.textSite)
+  return String(text || '').includes(TEXT_SITE_MARK)
+}
 
 /** The last VERDICT line in a test run's output, or null when there wasn't one. */
 export function readVerdict(text) {
@@ -26,23 +33,29 @@ export function readVerdict(text) {
 }
 
 /**
- * { passed, total, allOk } for one smoke run, decided from what the test
- * reported, not from how its process ended. No report at all means the test
- * died before it could say anything, which is not proof of a working source.
+ * { passed, total, allOk, textOnly } for one smoke run, decided from what the
+ * test reported, not from how its process ended. No report at all means the
+ * test died before it could say anything, which is not proof of a working
+ * source.
  */
 export function smokeResult(text, exitCode) {
   const verdict = readVerdict(text)
   if (verdict) {
     const total = verdict.passed + verdict.failed
-    return { passed: verdict.passed, total, allOk: total > 0 && verdict.failed === 0 }
+    return {
+      passed: verdict.passed,
+      total,
+      allOk: total > 0 && verdict.failed === 0,
+      textOnly: isTextOnlyRun(verdict.checks, text)
+    }
   }
   const m = /(\d+)\/(\d+) checks passed/.exec(String(text || ''))
   if (m) {
     const passed = Number(m[1])
     const total = Number(m[2])
-    return { passed, total, allOk: total > 0 && passed === total }
+    return { passed, total, allOk: total > 0 && passed === total, textOnly: isTextOnlyRun(null, text) }
   }
-  return { passed: 0, total: 0, allOk: false, exitCode: exitCode ?? null }
+  return { passed: 0, total: 0, allOk: false, textOnly: isTextOnlyRun(null, text), exitCode: exitCode ?? null }
 }
 
 /** Test output with the machine-readable line removed, for human logs. */
